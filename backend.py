@@ -1,5 +1,6 @@
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
+import duckdb
 import json
 import os
 import requests
@@ -17,9 +18,32 @@ logger = logging.getLogger(__name__)
 
 class OvertureDataService:
     def __init__(self):
-        # Initialize without DuckDB for now, using mock data and Nominatim
         self.db = None
-        logger.info("OvertureDataService initialized (using mock data and Nominatim fallback)")
+        self.setup_database()
+
+    def setup_database(self):
+        """Initialize DuckDB connection and load Overture Maps data"""
+        try:
+            self.db = duckdb.connect(":memory:")
+
+            # Install spatial extension for geometry operations
+            self.db.execute("INSTALL spatial;")
+            self.db.execute("LOAD spatial;")
+
+            # Install httpfs for reading remote parquet files
+            self.db.execute("INSTALL httpfs;")
+            self.db.execute("LOAD httpfs;")
+
+            # Configure AWS settings for accessing Overture data
+            self.db.execute("SET s3_region='us-west-2';")
+            self.db.execute("SET s3_access_key_id='';")
+            self.db.execute("SET s3_secret_access_key='';")
+
+            logger.info("Database setup completed successfully")
+        except Exception as e:
+            logger.error(f"Database setup failed: {e}")
+            # Don't raise the exception, just log it and continue with mock data
+            self.db = None
 
     def search_divisions(
         self, query: str, filters: Dict[str, bool]
@@ -55,27 +79,6 @@ class OvertureDataService:
             if not self.db:
                 raise Exception("Database connection not available")
 
-            # Try a simpler approach first - use the public Overture Maps data
-            # The divisions data is available in a different structure
-            base_url = "https://overturemaps-us-west-2.s3.amazonaws.com/release/2024-07-22.0/theme=divisions"
-
-            # First, let's try to access a sample file to test connectivity
-            test_query = """
-            SELECT COUNT(*) as count
-            FROM read_parquet('https://overturemaps-us-west-2.s3.amazonaws.com/release/2024-07-22.0/theme=divisions/type=division_area/part-00000-*.parquet')
-            LIMIT 1
-            """
-
-            try:
-                test_result = self.db.execute(test_query).fetchone()
-                logger.info(
-                    f"Overture data connectivity test successful: {test_result}"
-                )
-            except Exception as test_error:
-                logger.warning(f"Direct S3 access failed: {test_error}")
-                # Try alternative approach with OpenStreetMap Nominatim API
-                return self._query_nominatim_data(query, filters)
-
             # Build the main SQL query for Overture Maps data
             sql_query = f"""
             SELECT 
@@ -91,7 +94,7 @@ class OvertureDataService:
             AND (names.primary ILIKE '%{query}%' OR names.common ILIKE '%{query}%')
             """
 
-            # Add type filters based on admin_level instead of subtype
+            # Add type filters based on admin_level
             admin_level_conditions = []
             if filters.get("city", True):
                 admin_level_conditions.append(
@@ -109,8 +112,8 @@ class OvertureDataService:
 
             logger.info(f"Executing Overture query for '{query}'")
 
-            # Skip DuckDB execution for now
-            result = []
+            # Execute the query
+            result = self.db.execute(sql_query).fetchall()
 
             # Convert results to the expected format
             formatted_results = []

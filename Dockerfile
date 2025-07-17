@@ -9,8 +9,14 @@ RUN apt-get update && apt-get install -y \
     build-essential \
     gcc \
     g++ \
+    cmake \
+    git \
     curl \
     && rm -rf /var/lib/apt/lists/*
+
+# Set build environment variables for DuckDB compilation
+ENV CXXFLAGS="-O2"
+ENV MAKEFLAGS="-j2"
 
 # Copy requirements first for better caching
 COPY requirements.txt .
