@@ -1,0 +1,46 @@
+{
+    "app": {
+        "name": "Division Shape Viewer",
+        "version": "1.0.0",
+        "description": "Search and visualize administrative divisions using Overture Maps data"
+    },
+    "server": {
+        "host": "0.0.0.0",
+        "port": 5000,
+        "debug": true
+    },
+    "map": {
+        "defaultCenter": [
+            39.8283,
+            -98.5795
+        ],
+        "defaultZoom": 4,
+        "maxZoom": 18,
+        "minZoom": 2
+    },
+    "search": {
+        "maxResults": 20,
+        "minQueryLength": 2
+    },
+    "data": {
+        "overtureDataUrl": "https://overturemaps.org/data/divisions/latest/",
+        "useRemoteData": false,
+        "localDataPath": "./data/",
+        "cacheResults": true,
+        "cacheExpiryHours": 24
+    },
+    "ui": {
+        "showPopulation": true,
+        "showAdminLevel": true,
+        "showCountry": true,
+        "enableFilters": true,
+        "enableExport": true,
+        "enablePrint": true
+    },
+    "export": {
+        "imageFormat": "png",
+        "imageQuality": 0.9,
+        "imageScale": 2,
+        "filenameTemplate": "{name}_outline.{format}"
+    }
+}

@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Division Shape Viewer - Overture Maps</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Division Shape Viewer</h1>
+            <p>Search for cities, states, or areas using Overture Maps data</p>
+        </header>
+
+        <div class="search-section">
+            <div class="search-box">
+                <input type="text" id="searchInput" placeholder="Enter city, state, or area name..." />
+                <button id="searchBtn">Search</button>
+            </div>
+            
+            <div class="filters">
+                <label>
+                    <input type="checkbox" id="cityFilter" checked> Cities
+                </label>
+                <label>
+                    <input type="checkbox" id="stateFilter" checked> States/Provinces
+                </label>
+                <label>
+                    <input type="checkbox" id="countyFilter" checked> Counties
+                </label>
+            </div>
+        </div>
+
+        <div class="results-section" id="resultsSection" style="display: none;">
+            <h3>Search Results</h3>
+            <div id="resultsList"></div>
+        </div>
+
+        <div class="map-section">
+            <div class="map-controls">
+                <button id="toggleBackgroundBtn" style="display: none;">Hide Map Background</button>
+                <button id="saveBtn" style="display: none;">Save as Image</button>
+                <button id="printBtn" style="display: none;">Print</button>
+                <button id="clearBtn" style="display: none;">Clear</button>
+            </div>
+            <div id="map"></div>
+        </div>
+
+        <div class="info-panel" id="infoPanel" style="display: none;">
+            <h3>Selected Area Information</h3>
+            <div id="areaInfo"></div>
+        </div>
+    </div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+    <script src="script.js"></script>
+</body>
+</html>
