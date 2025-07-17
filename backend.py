@@ -1,6 +1,5 @@
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
-import duckdb
 import json
 import os
 import requests
@@ -18,6 +17,8 @@ logger = logging.getLogger(__name__)
 
 class OvertureDataService:
     def __init__(self):
+        # Removed DuckDB dependency for lighter deployment
+        self.setup_service()
         self.db = None
         self.setup_database()
 

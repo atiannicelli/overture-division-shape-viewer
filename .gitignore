@@ -58,3 +58,7 @@ logs/
 # Temporary files
 *.tmp
 *.temp
+
+# Deployment
+.railway/
+fly.toml
