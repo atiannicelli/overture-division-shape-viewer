@@ -17,34 +17,9 @@ logger = logging.getLogger(__name__)
 
 class OvertureDataService:
     def __init__(self):
-        # Removed DuckDB dependency for lighter deployment
-        self.setup_service()
+        # Initialize without DuckDB for now, using mock data and Nominatim
         self.db = None
-        self.setup_database()
-
-    def setup_database(self):
-        """Initialize DuckDB connection and load Overture Maps data"""
-        try:
-            self.db = duckdb.connect(":memory:")
-
-            # Install spatial extension for geometry operations
-            self.db.execute("INSTALL spatial;")
-            self.db.execute("LOAD spatial;")
-
-            # Install httpfs for reading remote parquet files
-            self.db.execute("INSTALL httpfs;")
-            self.db.execute("LOAD httpfs;")
-
-            # Configure AWS settings for accessing Overture data
-            self.db.execute("SET s3_region='us-west-2';")
-            self.db.execute("SET s3_access_key_id='';")
-            self.db.execute("SET s3_secret_access_key='';")
-
-            logger.info("Database setup completed successfully")
-        except Exception as e:
-            logger.error(f"Database setup failed: {e}")
-            # Don't raise the exception, just log it and continue with mock data
-            self.db = None
+        logger.info("OvertureDataService initialized (using mock data and Nominatim fallback)")
 
     def search_divisions(
         self, query: str, filters: Dict[str, bool]
@@ -134,8 +109,8 @@ class OvertureDataService:
 
             logger.info(f"Executing Overture query for '{query}'")
 
-            # Execute the query
-            result = self.db.execute(sql_query).fetchall()
+            # Skip DuckDB execution for now
+            result = []
 
             # Convert results to the expected format
             formatted_results = []
