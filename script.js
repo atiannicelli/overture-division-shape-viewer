@@ -232,11 +232,109 @@ class DivisionShapeViewer {
         }
     }
 
-    printMap() {
+    async printMap() {
         if (!this.selectedArea) return;
         
-        // Use browser's print functionality
-        window.print();
+        try {
+            // Show loading message
+            this.showSuccess('Generating print-ready image...');
+            
+            // Capture the map as canvas with high quality settings for printing
+            const mapElement = document.getElementById('map');
+            const canvas = await html2canvas(mapElement, {
+                useCORS: true,
+                allowTaint: true,
+                scale: 3, // Higher scale for better print quality
+                backgroundColor: '#ffffff',
+                width: mapElement.offsetWidth,
+                height: mapElement.offsetHeight,
+                logging: false
+            });
+
+            // Create a new canvas for the print layout
+            const printCanvas = document.createElement('canvas');
+            const printCtx = printCanvas.getContext('2d');
+            
+            // Set canvas size for 8.5x11 inch at 300 DPI (standard print resolution)
+            const dpi = 300;
+            const pageWidthInches = 8.5;
+            const pageHeightInches = 11;
+            printCanvas.width = pageWidthInches * dpi;
+            printCanvas.height = pageHeightInches * dpi;
+            
+            // Fill with white background
+            printCtx.fillStyle = '#ffffff';
+            printCtx.fillRect(0, 0, printCanvas.width, printCanvas.height);
+            
+            // Add title
+            printCtx.fillStyle = '#000000';
+            printCtx.font = `${Math.floor(dpi * 0.08)}px Arial, sans-serif`; // Approximately 24pt
+            printCtx.textAlign = 'center';
+            const titleY = dpi * 0.5; // 0.5 inch from top
+            printCtx.fillText(`${this.selectedArea.name} - Boundary Map`, printCanvas.width / 2, titleY);
+            
+            // Calculate map image dimensions (leave margins for text)
+            const marginTop = dpi * 1; // 1 inch from top
+            const marginBottom = dpi * 1.5; // 1.5 inches from bottom for info
+            const marginSides = dpi * 0.5; // 0.5 inch margins on sides
+            
+            const availableWidth = printCanvas.width - (marginSides * 2);
+            const availableHeight = printCanvas.height - marginTop - marginBottom;
+            
+            // Scale the map image to fit available space while maintaining aspect ratio
+            const mapAspectRatio = canvas.width / canvas.height;
+            const availableAspectRatio = availableWidth / availableHeight;
+            
+            let mapWidth, mapHeight;
+            if (mapAspectRatio > availableAspectRatio) {
+                // Map is wider - fit to width
+                mapWidth = availableWidth;
+                mapHeight = mapWidth / mapAspectRatio;
+            } else {
+                // Map is taller - fit to height
+                mapHeight = availableHeight;
+                mapWidth = mapHeight * mapAspectRatio;
+            }
+            
+            // Center the map image
+            const mapX = (printCanvas.width - mapWidth) / 2;
+            const mapY = marginTop + (availableHeight - mapHeight) / 2;
+            
+            // Draw the map
+            printCtx.drawImage(canvas, mapX, mapY, mapWidth, mapHeight);
+            
+            // Add area information at the bottom
+            printCtx.font = `${Math.floor(dpi * 0.04)}px Arial, sans-serif`; // Approximately 12pt
+            printCtx.textAlign = 'left';
+            const infoStartY = printCanvas.height - marginBottom + (dpi * 0.2);
+            const lineHeight = dpi * 0.06; // Line spacing
+            
+            const infoLines = [
+                `Type: ${this.selectedArea.type.charAt(0).toUpperCase() + this.selectedArea.type.slice(1)}`,
+                `Region: ${this.selectedArea.region}`,
+                `Country: ${this.selectedArea.country || 'N/A'}`,
+                `Population: ${this.selectedArea.population ? this.selectedArea.population.toLocaleString() : 'N/A'}`,
+                `Generated: ${new Date().toLocaleDateString()} at ${new Date().toLocaleTimeString()}`
+            ];
+            
+            infoLines.forEach((line, index) => {
+                printCtx.fillText(line, marginSides, infoStartY + (index * lineHeight));
+            });
+            
+            // Convert to JPG with high quality
+            const jpgDataUrl = printCanvas.toDataURL('image/jpeg', 0.95); // 95% quality
+            
+            // Create download link
+            const link = document.createElement('a');
+            const fileName = `${this.selectedArea.name.replace(/[^a-z0-9]/gi, '_')}_boundary_print.jpg`;
+            link.download = fileName;
+            link.href = jpgDataUrl;
+            link.click();
+            
+            this.showSuccess('Print-ready JPG image saved! Ready for printing.');
+        } catch (error) {
+            this.showError('Error generating print image: ' + error.message);
+        }
     }
 
     clearMap() {
