@@ -4,7 +4,7 @@ A web application for searching and visualizing administrative divisions (cities
 
 ## 🌐 Live Demo
 
-[View Live Application](https://your-app-name.onrender.com) _(Will be updated after deployment)_
+[View Live Application](https://overture-division-shape-viewer.fly.dev/) - **Now Live on Fly.io!**
 
 ## Features
 
@@ -16,18 +16,18 @@ A web application for searching and visualizing administrative divisions (cities
 
 ## 🚀 Deployment
 
-This application is automatically deployed from GitHub using Render.
+This application is automatically deployed from GitHub using Fly.io.
 
 ### Deploy Your Own Copy
 
 1. **Fork this repository** on GitHub
-2. **Sign up for Render** at [render.com](https://render.com)
-3. **Connect your GitHub account** to Render
-4. **Create a new Web Service** and select this repository
-5. **Configure the deployment**:
-   - Build Command: `pip install -r requirements.txt`
-   - Start Command: `python backend.py`
-   - Python Version: 3.11.11
+2. **Sign up for Fly.io** at [fly.io](https://fly.io)
+3. **Connect your GitHub account** to Fly.io
+4. **Create a new app** in Fly.io dashboard
+5. **Set up GitHub Actions deployment**:
+   - Get your Fly API token from dashboard
+   - Add `FLY_API_TOKEN` to GitHub repository secrets
+   - Push to main branch triggers automatic deployment
 
 ## Setup Instructions
 
