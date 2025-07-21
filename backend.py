@@ -5,7 +5,7 @@ import json
 import os
 import requests
 import urllib.parse
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 import logging
 
 app = Flask(__name__)
@@ -46,113 +46,119 @@ class OvertureDataService:
             self.db = None
 
     def search_divisions(
-        self, query: str, filters: Dict[str, bool]
+        self,
+        query: str,
+        filters: Dict[str, bool],
+        bbox: Optional[Dict[str, float]] = None,
     ) -> List[Dict[str, Any]]:
         """Search for divisions in Overture Maps data"""
         try:
-            # Try to query actual Overture Maps data first
-            try:
-                results = self._query_overture_data(query, filters)
-                if results:
-                    logger.info(f"Found {len(results)} results from Overture Maps data")
-                    return results
-            except Exception as overture_error:
-                logger.warning(
-                    f"Overture Maps query failed, falling back to mock data: {overture_error}"
-                )
-
-            # Fallback to mock data if Overture query fails
-            results = self._get_mock_data(query, filters)
-            logger.info(f"Using mock data, found {len(results)} results")
+            # Query actual Overture Maps data only - no mock data fallback
+            results = self._query_overture_data(query, filters, bbox)
+            logger.info(f"Found {len(results)} results from Overture Maps data")
             return results
 
         except Exception as e:
             logger.error(f"Search failed: {e}")
-            raise
+            # Fallback to Nominatim if Overture fails
+            try:
+                results = self._query_nominatim_data(query, filters, bbox)
+                logger.info(f"Found {len(results)} results from Nominatim fallback")
+                return results
+            except Exception as fallback_error:
+                logger.error(f"Nominatim fallback also failed: {fallback_error}")
+                return []
 
     def _query_overture_data(
-        self, query: str, filters: Dict[str, bool]
+        self,
+        query: str,
+        filters: Dict[str, bool],
+        bbox: Optional[Dict[str, float]] = None,
     ) -> List[Dict[str, Any]]:
-        """Query actual Overture Maps data from S3"""
+        """Query actual Overture Maps data from S3 using two-phase approach"""
         try:
             # Check if database is available
             if not self.db:
                 raise Exception("Database connection not available")
 
-            # Try a simpler approach first - use the public Overture Maps data
-            # The divisions data is available in a different structure
-            base_url = "https://overturemaps-us-west-2.s3.amazonaws.com/release/2024-07-22.0/theme=divisions"
-
-            # First, let's try to access a sample file to test connectivity
-            test_query = """
-            SELECT COUNT(*) as count
-            FROM read_parquet('https://overturemaps-us-west-2.s3.amazonaws.com/release/2024-07-22.0/theme=divisions/type=division_area/part-00000-*.parquet')
-            LIMIT 1
-            """
-
-            try:
-                test_result = self.db.execute(test_query).fetchone()
-                logger.info(
-                    f"Overture data connectivity test successful: {test_result}"
-                )
-            except Exception as test_error:
-                logger.warning(f"Direct S3 access failed: {test_error}")
-                # Try alternative approach with OpenStreetMap Nominatim API
-                return self._query_nominatim_data(query, filters)
-
-            # Build the main SQL query for Overture Maps data
-            sql_query = f"""
+            # PHASE 1: Fast query to get division metadata only (no geometry)
+            metadata_query = f"""
             SELECT 
                 id,
-                names.primary as name,
+                CAST(names['primary'] AS VARCHAR) as name,
                 subtype,
-                names.common,
+                CAST(names['common'] AS VARCHAR) as common_name,
                 country,
-                admin_level,
-                ST_AsGeoJSON(geometry) as geometry_json
-            FROM read_parquet('https://overturemaps-us-west-2.s3.amazonaws.com/release/2024-07-22.0/theme=divisions/type=division_area/*.parquet')
-            WHERE names.primary IS NOT NULL
-            AND (names.primary ILIKE '%{query}%' OR names.common ILIKE '%{query}%')
+                bbox
+            FROM read_parquet('s3://overturemaps-us-west-2/release/2025-06-25.0/theme=divisions/type=division_area/*.parquet')
+            WHERE names['primary'] IS NOT NULL
+            AND (CAST(names['primary'] AS VARCHAR) ILIKE '%{query}%')
             """
 
-            # Add type filters based on admin_level instead of subtype
-            admin_level_conditions = []
-            if filters.get("city", True):
-                admin_level_conditions.append(
-                    "admin_level >= 8"
-                )  # Cities and localities
-            if filters.get("state", True):
-                admin_level_conditions.append("admin_level = 4")  # States/Provinces
-            if filters.get("county", True):
-                admin_level_conditions.append("admin_level = 6")  # Counties
+            # Add spatial filtering if bbox is provided
+            if bbox:
+                # Convert bbox to spatial filter - check if the feature's bbox intersects with the viewport bbox
+                metadata_query += f"""
+                AND bbox IS NOT NULL
+                AND bbox['minX'] <= {bbox['east']}
+                AND bbox['maxX'] >= {bbox['west']}
+                AND bbox['minY'] <= {bbox['north']}
+                AND bbox['maxY'] >= {bbox['south']}
+                """
+                logger.info(f"Applying spatial filter: {bbox}")
 
-            if admin_level_conditions:
-                sql_query += f" AND ({' OR '.join(admin_level_conditions)})"
+            # Add simple subtype filters
+            if not (
+                filters.get("city", True)
+                and filters.get("state", True)
+                and filters.get("county", True)
+            ):
+                subtype_conditions = []
+                if filters.get("city", True):
+                    subtype_conditions.append("subtype = 'locality'")
+                if filters.get("state", True):
+                    subtype_conditions.append("subtype IN ('region', 'country')")
+                if filters.get("county", True):
+                    subtype_conditions.append("subtype = 'county'")
 
-            sql_query += " LIMIT 20"
+                if subtype_conditions:
+                    metadata_query += f" AND ({' OR '.join(subtype_conditions)})"
 
-            logger.info(f"Executing Overture query for '{query}'")
+            metadata_query += " LIMIT 20"
 
-            # Execute the query
-            result = self.db.execute(sql_query).fetchall()
+            logger.info(
+                f"Executing Overture metadata query for '{query}' with spatial filter: {bbox is not None}"
+            )
+
+            # Execute the metadata query
+            metadata_results = self.db.execute(metadata_query).fetchall()
 
             # Convert results to the expected format
             formatted_results = []
-            for row in result:
+            for row in metadata_results:
                 try:
-                    geometry_json = json.loads(row[6]) if row[6] else None
+                    # Determine type based on subtype
+                    subtype = row[2] or ""
 
-                    # Determine type based on admin_level
-                    admin_level = row[5] or 0
-                    if admin_level >= 8:
+                    if subtype == "locality":
                         type_name = "city"
-                    elif admin_level == 6:
+                    elif subtype == "county":
                         type_name = "county"
-                    elif admin_level == 4:
+                    elif subtype in ["region", "country"]:
                         type_name = "state"
                     else:
                         type_name = "region"
 
+                    # Map subtype to a reasonable admin level for compatibility
+                    admin_level_map = {
+                        "locality": 8,
+                        "county": 6,
+                        "region": 4,
+                        "country": 2,
+                    }
+                    admin_level = admin_level_map.get(subtype, 0)
+
+                    # Create result without geometry initially
                     formatted_result = {
                         "id": row[0] or f"overture_{len(formatted_results)}",
                         "name": row[1] or row[3] or "Unknown",
@@ -161,24 +167,67 @@ class OvertureDataService:
                         "country": row[4] or "Unknown",
                         "admin_level": admin_level,
                         "population": None,  # Population not available in divisions data
-                        "geometry": geometry_json,
+                        "geometry": None,  # Will be fetched separately if needed
                     }
                     formatted_results.append(formatted_result)
                 except Exception as row_error:
-                    logger.warning(f"Error processing row: {row_error}")
+                    logger.warning(f"Error processing metadata row: {row_error}")
                     continue
 
             logger.info(
-                f"Successfully processed {len(formatted_results)} results from Overture Maps"
+                f"Successfully processed {len(formatted_results)} metadata results from Overture Maps"
             )
             return formatted_results
 
         except Exception as e:
-            logger.error(f"Overture Maps query failed: {e}")
+            logger.error(f"Overture Maps metadata query failed: {e}")
             raise
 
+    def get_division_geometry(self, division_id: str) -> dict:
+        """PHASE 2: Fetch geometry for a specific division ID"""
+        try:
+            if not self.db:
+                raise Exception("Database connection not available")
+
+            # Query for specific geometry with simplification
+            geometry_query = f"""
+            SELECT 
+                ST_AsGeoJSON(ST_Simplify(ST_GeomFromWKB(geometry), 0.00001)) as geometry_json
+            FROM read_parquet('s3://overturemaps-us-west-2/release/2025-06-25.0/theme=divisions/type=division_area/*.parquet')
+            WHERE id = '{division_id}'
+            LIMIT 1
+            """
+
+            logger.info(f"Fetching simplified geometry for division: {division_id}")
+
+            result = self.db.execute(geometry_query).fetchone()
+
+            if result and result[0]:
+                return json.loads(result[0])
+            else:
+                # Return a default bounding box if geometry not found
+                return {
+                    "type": "Polygon",
+                    "coordinates": [
+                        [[-180, -90], [180, -90], [180, 90], [-180, 90], [-180, -90]]
+                    ],
+                }
+
+        except Exception as e:
+            logger.error(f"Geometry fetch failed for {division_id}: {e}")
+            # Return a default bounding box on error
+            return {
+                "type": "Polygon",
+                "coordinates": [
+                    [[-180, -90], [180, -90], [180, 90], [-180, 90], [-180, -90]]
+                ],
+            }
+
     def _query_nominatim_data(
-        self, query: str, filters: Dict[str, bool]
+        self,
+        query: str,
+        filters: Dict[str, bool],
+        bbox: Optional[Dict[str, float]] = None,
     ) -> List[Dict[str, Any]]:
         """Fallback to OpenStreetMap Nominatim API for geocoding"""
         try:
@@ -196,6 +245,15 @@ class OvertureDataService:
                 "addressdetails": 1,
                 "extratags": 1,
             }
+
+            # Add spatial filtering if bbox is provided
+            if bbox:
+                # Nominatim uses viewbox parameter: left,top,right,bottom (west,north,east,south)
+                params["viewbox"] = (
+                    f"{bbox['west']},{bbox['north']},{bbox['east']},{bbox['south']}"
+                )
+                params["bounded"] = 1  # Prefer results within the viewbox
+                logger.info(f"Applying Nominatim spatial filter: {bbox}")
 
             # Add type-specific filters
             if (
@@ -304,158 +362,6 @@ class OvertureDataService:
         }
         return mapping.get(overture_type, overture_type or "unknown")
 
-    def _get_mock_data(
-        self, query: str, filters: Dict[str, bool]
-    ) -> List[Dict[str, Any]]:
-        """Mock data for demonstration purposes"""
-        mock_data = [
-            {
-                "id": "division_1",
-                "name": "San Francisco",
-                "type": "city",
-                "region": "California, USA",
-                "country": "US",
-                "admin_level": 8,
-                "population": 874784,
-                "geometry": {
-                    "type": "Polygon",
-                    "coordinates": [
-                        [
-                            [-122.514926, 37.708949],
-                            [-122.357178, 37.708949],
-                            [-122.357178, 37.832049],
-                            [-122.514926, 37.832049],
-                            [-122.514926, 37.708949],
-                        ]
-                    ],
-                },
-            },
-            {
-                "id": "division_2",
-                "name": "Los Angeles",
-                "type": "city",
-                "region": "California, USA",
-                "country": "US",
-                "admin_level": 8,
-                "population": 3971883,
-                "geometry": {
-                    "type": "Polygon",
-                    "coordinates": [
-                        [
-                            [-118.668404, 33.703652],
-                            [-118.155289, 33.703652],
-                            [-118.155289, 34.337306],
-                            [-118.668404, 34.337306],
-                            [-118.668404, 33.703652],
-                        ]
-                    ],
-                },
-            },
-            {
-                "id": "division_3",
-                "name": "California",
-                "type": "state",
-                "region": "USA",
-                "country": "US",
-                "admin_level": 4,
-                "population": 39538223,
-                "geometry": {
-                    "type": "Polygon",
-                    "coordinates": [
-                        [
-                            [-124.409591, 32.534156],
-                            [-114.131211, 32.534156],
-                            [-114.131211, 42.009518],
-                            [-124.409591, 42.009518],
-                            [-124.409591, 32.534156],
-                        ]
-                    ],
-                },
-            },
-            {
-                "id": "division_4",
-                "name": "Orange County",
-                "type": "county",
-                "region": "California, USA",
-                "country": "US",
-                "admin_level": 6,
-                "population": 3186989,
-                "geometry": {
-                    "type": "Polygon",
-                    "coordinates": [
-                        [
-                            [-118.006071, 33.347929],
-                            [-117.627805, 33.347929],
-                            [-117.627805, 33.774809],
-                            [-118.006071, 33.774809],
-                            [-118.006071, 33.347929],
-                        ]
-                    ],
-                },
-            },
-            {
-                "id": "division_5",
-                "name": "New York",
-                "type": "city",
-                "region": "New York, USA",
-                "country": "US",
-                "admin_level": 8,
-                "population": 8336817,
-                "geometry": {
-                    "type": "Polygon",
-                    "coordinates": [
-                        [
-                            [-74.259090, 40.477399],
-                            [-73.700272, 40.477399],
-                            [-73.700272, 40.917577],
-                            [-74.259090, 40.917577],
-                            [-74.259090, 40.477399],
-                        ]
-                    ],
-                },
-            },
-            {
-                "id": "division_6",
-                "name": "New York",
-                "type": "state",
-                "region": "USA",
-                "country": "US",
-                "admin_level": 4,
-                "population": 19336776,
-                "geometry": {
-                    "type": "Polygon",
-                    "coordinates": [
-                        [
-                            [-79.762152, 40.496103],
-                            [-71.856214, 40.496103],
-                            [-71.856214, 45.015865],
-                            [-79.762152, 45.015865],
-                            [-79.762152, 40.496103],
-                        ]
-                    ],
-                },
-            },
-        ]
-
-        # Filter based on query
-        filtered_results = []
-        query_lower = query.lower()
-
-        for item in mock_data:
-            if (
-                query_lower in item["name"].lower()
-                or query_lower in item["region"].lower()
-            ):
-                # Apply type filters
-                if item["type"] == "city" and filters.get("city", True):
-                    filtered_results.append(item)
-                elif item["type"] == "state" and filters.get("state", True):
-                    filtered_results.append(item)
-                elif item["type"] == "county" and filters.get("county", True):
-                    filtered_results.append(item)
-
-        return filtered_results[:10]  # Limit results
-
 
 # Initialize service
 overture_service = OvertureDataService()
@@ -480,16 +386,29 @@ def search_divisions():
         data = request.get_json()
         query = data.get("query", "")
         filters = data.get("filters", {})
+        bbox = data.get("bbox", None)
 
         if not query:
             return jsonify({"error": "Query parameter is required"}), 400
 
-        results = overture_service.search_divisions(query, filters)
+        results = overture_service.search_divisions(query, filters, bbox)
 
         return jsonify(results)
 
     except Exception as e:
         logger.error(f"Search endpoint error: {e}")
+        return jsonify({"error": "Internal server error"}), 500
+
+
+@app.route("/api/geometry/<division_id>", methods=["GET"])
+def get_geometry(division_id):
+    """Get geometry for a specific division ID"""
+    try:
+        geometry = overture_service.get_division_geometry(division_id)
+        return jsonify({"geometry": geometry})
+
+    except Exception as e:
+        logger.error(f"Geometry endpoint error: {e}")
         return jsonify({"error": "Internal server error"}), 500
 
 
@@ -500,5 +419,5 @@ def health_check():
 
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
+    port = int(os.environ.get("PORT", 4000))
     app.run(debug=False, host="0.0.0.0", port=port)
