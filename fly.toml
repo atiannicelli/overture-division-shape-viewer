@@ -13,11 +13,6 @@ primary_region = 'ord'
 
 [env]
   FLASK_ENV = 'production'
-  DUCKDB_PATH = '/data/divisions_index.duckdb'
-
-[mounts]
-  source = 'divisions_data'
-  destination = '/data'
 
 [http_service]
   internal_port = 4000
@@ -26,7 +21,11 @@ primary_region = 'ord'
   auto_start_machines = true
   min_machines_running = 0
 
+[processes]
+  app = "python backend.py"
+
 [[vm]]
   memory = '4gb'
   cpu_kind = 'shared'
   cpus = 2
+  processes = ["app"]
