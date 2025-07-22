@@ -25,7 +25,7 @@ class OvertureDataService:
         """Initialize DuckDB connection with persistent database and indexes"""
         try:
             # Use persistent database file
-            db_path = os.environ.get('DUCKDB_PATH', './divisions_index.duckdb')
+            db_path = os.environ.get("DUCKDB_PATH", "./divisions_index.duckdb")
             self.db = duckdb.connect(db_path)
 
             # Install spatial extension for geometry operations
@@ -41,83 +41,43 @@ class OvertureDataService:
             self.db.execute("SET s3_access_key_id='';")
             self.db.execute("SET s3_secret_access_key='';")
 
-            # Check if index table exists, create if not
-            self._ensure_divisions_index()
+            # Verify the pre-built index table exists
+            self._verify_divisions_index()
 
-            logger.info("Database setup with persistent indexing completed successfully")
+            logger.info("Database setup with pre-built indexing completed successfully")
         except Exception as e:
             logger.error(f"Database setup failed: {e}")
             # Don't raise the exception, just log it and continue with mock data
             self.db = None
 
-    def _ensure_divisions_index(self):
-        """Ensure the divisions index table exists, create if not"""
+    def _verify_divisions_index(self):
+        """Verify the pre-built divisions index table exists"""
         try:
             # Check if database is available
             if not self.db:
                 raise Exception("Database connection not available")
-                
+
             # Check if index table exists
-            table_exists = self.db.execute("""
+            table_exists = self.db.execute(
+                """
                 SELECT COUNT(*) FROM information_schema.tables 
                 WHERE table_name = 'divisions_index'
-            """).fetchone()[0]
-            
-            if table_exists == 0:
-                logger.info("Divisions index table not found, creating...")
-                self._create_divisions_index()
-            else:
-                # Check if we need to update the index (optional version check)
-                row_count = self.db.execute("SELECT COUNT(*) FROM divisions_index").fetchone()[0]
-                logger.info(f"Using existing divisions index with {row_count} entries")
-                
-        except Exception as e:
-            logger.error(f"Error checking divisions index: {e}")
-            raise
+            """
+            ).fetchone()[0]
 
-    def _create_divisions_index(self):
-        """Create an indexed table from Overture Maps data for faster queries"""
-        try:
-            # Check if database is available
-            if not self.db:
-                raise Exception("Database connection not available")
-                
-            logger.info("Creating divisions index table from Overture Maps data...")
-            
-            # Create table with selected columns and proper data types
-            self.db.execute("""
-                CREATE TABLE divisions_index AS 
-                SELECT 
-                    id,
-                    CAST(names['primary'] AS VARCHAR) as name,
-                    UPPER(CAST(names['primary'] AS VARCHAR)) as name_upper,
-                    subtype,
-                    CAST(names['common'] AS VARCHAR) as common_name,
-                    country,
-                    bbox,
-                    geometry as geom_wkb
-                FROM read_parquet('s3://overturemaps-us-west-2/release/2025-06-25.0/theme=divisions/type=division_area/*.parquet')
-                WHERE names['primary'] IS NOT NULL
-                AND LENGTH(CAST(names['primary'] AS VARCHAR)) > 0
-            """)
-            
-            logger.info("Creating indexes for faster searches...")
-            
-            # Create indexes for faster searches
-            self.db.execute("CREATE INDEX idx_name ON divisions_index(name)")
-            self.db.execute("CREATE INDEX idx_name_upper ON divisions_index(name_upper)")
-            self.db.execute("CREATE INDEX idx_subtype ON divisions_index(subtype)")
-            self.db.execute("CREATE INDEX idx_country ON divisions_index(country)")
-            self.db.execute("CREATE INDEX idx_id ON divisions_index(id)")
-            
-            # Create compound index for common search patterns
-            self.db.execute("CREATE INDEX idx_name_subtype ON divisions_index(name_upper, subtype)")
-            
-            row_count = self.db.execute("SELECT COUNT(*) FROM divisions_index").fetchone()[0]
-            logger.info(f"Divisions index created successfully with {row_count} entries and 6 indexes")
-            
+            if table_exists == 0:
+                raise Exception(
+                    "Pre-built divisions index table not found! The Docker image should contain a pre-built index."
+                )
+            else:
+                # Log the number of entries in the pre-built index
+                row_count = self.db.execute(
+                    "SELECT COUNT(*) FROM divisions_index"
+                ).fetchone()[0]
+                logger.info(f"Using pre-built divisions index with {row_count} entries")
+
         except Exception as e:
-            logger.error(f"Failed to create divisions index: {e}")
+            logger.error(f"Error verifying pre-built divisions index: {e}")
             raise
 
     def search_divisions(
@@ -168,8 +128,8 @@ class OvertureDataService:
             FROM divisions_index
             WHERE name_upper LIKE ?
             """
-            
-            params = [f'%{query.upper()}%']
+
+            params = [f"%{query.upper()}%"]
 
             # Add spatial filtering if bbox is provided
             if bbox:
@@ -181,7 +141,9 @@ class OvertureDataService:
                 AND bbox['ymin'] <= ?
                 AND bbox['ymax'] >= ?
                 """
-                params.extend([bbox['east'], bbox['west'], bbox['north'], bbox['south']])
+                params.extend(
+                    [bbox["east"], bbox["west"], bbox["north"], bbox["south"]]
+                )
                 logger.info(f"Applying spatial filter: {bbox}")
 
             # Add simple subtype filters
@@ -261,16 +223,16 @@ class OvertureDataService:
             raise
 
     def get_division_geometry(self, division_id: str) -> dict:
-        """PHASE 2: Fetch geometry for a specific division ID from indexed table"""
+        """PHASE 2: Fetch geometry for a specific division ID directly from Overture data"""
         try:
             if not self.db:
                 raise Exception("Database connection not available")
 
-            # Query for specific geometry from indexed table with simplification
+            # Query for specific geometry directly from Overture parquet files
             geometry_query = """
             SELECT 
-                ST_AsGeoJSON(ST_Simplify(ST_GeomFromWKB(geom_wkb), 0.00001)) as geometry_json
-            FROM divisions_index
+                ST_AsGeoJSON(ST_Simplify(ST_GeomFromWKB(geometry), 0.00001)) as geometry_json
+            FROM read_parquet('s3://overturemaps-us-west-2/release/2025-06-25.0/theme=divisions/type=division_area/*.parquet')
             WHERE id = ?
             LIMIT 1
             """
@@ -497,4 +459,5 @@ def health_check():
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 4000))
+    # Test comment to verify Docker layer caching works
     app.run(debug=False, host="0.0.0.0", port=port)
