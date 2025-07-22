@@ -22,9 +22,11 @@ class OvertureDataService:
         self.setup_database()
 
     def setup_database(self):
-        """Initialize DuckDB connection and load Overture Maps data"""
+        """Initialize DuckDB connection with persistent database and indexes"""
         try:
-            self.db = duckdb.connect(":memory:")
+            # Use persistent database file
+            db_path = os.environ.get('DUCKDB_PATH', './divisions_index.duckdb')
+            self.db = duckdb.connect(db_path)
 
             # Install spatial extension for geometry operations
             self.db.execute("INSTALL spatial;")
@@ -39,11 +41,84 @@ class OvertureDataService:
             self.db.execute("SET s3_access_key_id='';")
             self.db.execute("SET s3_secret_access_key='';")
 
-            logger.info("Database setup completed successfully")
+            # Check if index table exists, create if not
+            self._ensure_divisions_index()
+
+            logger.info("Database setup with persistent indexing completed successfully")
         except Exception as e:
             logger.error(f"Database setup failed: {e}")
             # Don't raise the exception, just log it and continue with mock data
             self.db = None
+
+    def _ensure_divisions_index(self):
+        """Ensure the divisions index table exists, create if not"""
+        try:
+            # Check if database is available
+            if not self.db:
+                raise Exception("Database connection not available")
+                
+            # Check if index table exists
+            table_exists = self.db.execute("""
+                SELECT COUNT(*) FROM information_schema.tables 
+                WHERE table_name = 'divisions_index'
+            """).fetchone()[0]
+            
+            if table_exists == 0:
+                logger.info("Divisions index table not found, creating...")
+                self._create_divisions_index()
+            else:
+                # Check if we need to update the index (optional version check)
+                row_count = self.db.execute("SELECT COUNT(*) FROM divisions_index").fetchone()[0]
+                logger.info(f"Using existing divisions index with {row_count} entries")
+                
+        except Exception as e:
+            logger.error(f"Error checking divisions index: {e}")
+            raise
+
+    def _create_divisions_index(self):
+        """Create an indexed table from Overture Maps data for faster queries"""
+        try:
+            # Check if database is available
+            if not self.db:
+                raise Exception("Database connection not available")
+                
+            logger.info("Creating divisions index table from Overture Maps data...")
+            
+            # Create table with selected columns and proper data types
+            self.db.execute("""
+                CREATE TABLE divisions_index AS 
+                SELECT 
+                    id,
+                    CAST(names['primary'] AS VARCHAR) as name,
+                    UPPER(CAST(names['primary'] AS VARCHAR)) as name_upper,
+                    subtype,
+                    CAST(names['common'] AS VARCHAR) as common_name,
+                    country,
+                    bbox,
+                    geometry as geom_wkb
+                FROM read_parquet('s3://overturemaps-us-west-2/release/2025-06-25.0/theme=divisions/type=division_area/*.parquet')
+                WHERE names['primary'] IS NOT NULL
+                AND LENGTH(CAST(names['primary'] AS VARCHAR)) > 0
+            """)
+            
+            logger.info("Creating indexes for faster searches...")
+            
+            # Create indexes for faster searches
+            self.db.execute("CREATE INDEX idx_name ON divisions_index(name)")
+            self.db.execute("CREATE INDEX idx_name_upper ON divisions_index(name_upper)")
+            self.db.execute("CREATE INDEX idx_subtype ON divisions_index(subtype)")
+            self.db.execute("CREATE INDEX idx_country ON divisions_index(country)")
+            self.db.execute("CREATE INDEX idx_id ON divisions_index(id)")
+            
+            # Create compound index for common search patterns
+            self.db.execute("CREATE INDEX idx_name_subtype ON divisions_index(name_upper, subtype)")
+            
+            row_count = self.db.execute("SELECT COUNT(*) FROM divisions_index").fetchone()[0]
+            logger.info(f"Divisions index created successfully with {row_count} entries and 6 indexes")
+            
+        except Exception as e:
+            logger.error(f"Failed to create divisions index: {e}")
+            raise
 
     def search_divisions(
         self,
@@ -75,36 +150,38 @@ class OvertureDataService:
         filters: Dict[str, bool],
         bbox: Optional[Dict[str, float]] = None,
     ) -> List[Dict[str, Any]]:
-        """Query actual Overture Maps data from S3 using two-phase approach"""
+        """Query indexed divisions data for fast searches"""
         try:
             # Check if database is available
             if not self.db:
                 raise Exception("Database connection not available")
 
-            # PHASE 1: Fast query to get division metadata only (no geometry)
-            metadata_query = f"""
+            # Use indexed table for much faster queries
+            metadata_query = """
             SELECT 
                 id,
-                CAST(names['primary'] AS VARCHAR) as name,
+                name,
                 subtype,
-                CAST(names['common'] AS VARCHAR) as common_name,
+                common_name,
                 country,
                 bbox
-            FROM read_parquet('s3://overturemaps-us-west-2/release/2025-06-25.0/theme=divisions/type=division_area/*.parquet')
-            WHERE names['primary'] IS NOT NULL
-            AND (CAST(names['primary'] AS VARCHAR) ILIKE '%{query}%')
+            FROM divisions_index
+            WHERE name_upper LIKE ?
             """
+            
+            params = [f'%{query.upper()}%']
 
             # Add spatial filtering if bbox is provided
             if bbox:
                 # Convert bbox to spatial filter - check if the feature's bbox intersects with the viewport bbox
-                metadata_query += f"""
+                metadata_query += """
                 AND bbox IS NOT NULL
-                AND bbox['minX'] <= {bbox['east']}
-                AND bbox['maxX'] >= {bbox['west']}
-                AND bbox['minY'] <= {bbox['north']}
-                AND bbox['maxY'] >= {bbox['south']}
+                AND bbox['xmin'] <= ?
+                AND bbox['xmax'] >= ?
+                AND bbox['ymin'] <= ?
+                AND bbox['ymax'] >= ?
                 """
+                params.extend([bbox['east'], bbox['west'], bbox['north'], bbox['south']])
                 logger.info(f"Applying spatial filter: {bbox}")
 
             # Add simple subtype filters
@@ -124,14 +201,14 @@ class OvertureDataService:
                 if subtype_conditions:
                     metadata_query += f" AND ({' OR '.join(subtype_conditions)})"
 
-            metadata_query += " LIMIT 20"
+            metadata_query += " ORDER BY name LIMIT 20"
 
             logger.info(
-                f"Executing Overture metadata query for '{query}' with spatial filter: {bbox is not None}"
+                f"Executing indexed query for '{query}' with spatial filter: {bbox is not None}"
             )
 
-            # Execute the metadata query
-            metadata_results = self.db.execute(metadata_query).fetchall()
+            # Execute the parameterized query
+            metadata_results = self.db.execute(metadata_query, params).fetchall()
 
             # Convert results to the expected format
             formatted_results = []
@@ -184,23 +261,23 @@ class OvertureDataService:
             raise
 
     def get_division_geometry(self, division_id: str) -> dict:
-        """PHASE 2: Fetch geometry for a specific division ID"""
+        """PHASE 2: Fetch geometry for a specific division ID from indexed table"""
         try:
             if not self.db:
                 raise Exception("Database connection not available")
 
-            # Query for specific geometry with simplification
-            geometry_query = f"""
+            # Query for specific geometry from indexed table with simplification
+            geometry_query = """
             SELECT 
-                ST_AsGeoJSON(ST_Simplify(ST_GeomFromWKB(geometry), 0.00001)) as geometry_json
-            FROM read_parquet('s3://overturemaps-us-west-2/release/2025-06-25.0/theme=divisions/type=division_area/*.parquet')
-            WHERE id = '{division_id}'
+                ST_AsGeoJSON(ST_Simplify(ST_GeomFromWKB(geom_wkb), 0.00001)) as geometry_json
+            FROM divisions_index
+            WHERE id = ?
             LIMIT 1
             """
 
             logger.info(f"Fetching simplified geometry for division: {division_id}")
 
-            result = self.db.execute(geometry_query).fetchone()
+            result = self.db.execute(geometry_query, [division_id]).fetchone()
 
             if result and result[0]:
                 return json.loads(result[0])

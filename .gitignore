@@ -8,6 +8,11 @@ build/
 develop-eggs/
 dist/
 downloads/
+
+# DuckDB database files
+*.duckdb
+*.duckdb.wal
+divisions_index.duckdb*
 eggs/
 .eggs/
 lib/
