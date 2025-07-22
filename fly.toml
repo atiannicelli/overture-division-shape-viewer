@@ -13,6 +13,11 @@ primary_region = 'ord'
 
 [env]
   FLASK_ENV = 'production'
+  DUCKDB_PATH = '/data/divisions_index.duckdb'
+
+[mounts]
+  source = 'divisions_data'
+  destination = '/data'
 
 [http_service]
   internal_port = 4000
@@ -22,6 +27,6 @@ primary_region = 'ord'
   min_machines_running = 0
 
 [[vm]]
-  memory = '2gb'
+  memory = '4gb'
   cpu_kind = 'shared'
-  cpus = 1
+  cpus = 2
